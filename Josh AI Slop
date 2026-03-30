@@ -10,8 +10,7 @@ from dateutil import parser # Flexible human-readable date parsing
 # --- CONFIGURATION ---
 # SECURITY WARNING: Never share your token publicly. 
 # It is recommended to reset this token in the Developer Portal immediately.
-TOKEN = 'needs to be refreshed this token got nuked'
-SHEET_URL = 'https://docs.google.com/spreadsheets/d/1BjtSiYMu4EsPOZdsfMFnFubCcLts0dNKPbbPGqTAzDc/edit?gid=0#gid=0'
+TOKEN = 'I learned this time'
 # Set the time to send (24-hour format: Hour, Minute)
 # TARGET_TIME = datetime.time(hour=22, minute=31, second=0) 
 # ---------------------
@@ -23,13 +22,22 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Authenticate with Google
 gc = gspread.service_account(filename=r'C:\Users\joshu\OneDrive\Desktop\UCLA\Y3Q2\Enigmafia\enigmafia-discord-integration-fa2fad62b909.json')
-sh = gc.open_by_url(SHEET_URL)
-worksheet = sh.get_worksheet(0)
-print(f"Connected to sheet: {worksheet.title}")
+
+@bot.command()
+async def help(ctx):
+    await ctx.send(f"""# These are the available commands:\n
+    **!ping**, returns the user ping to check if the bot is lagging\n
+    **!dm {"{discord user id number} {Full message}"}**, use this to check if the bot can dm a user\n
+    **!sheet {"{google sheet URL}"}**, use this to check if the bot can access a sheet\n
+    **!schedule_dm {"{date in 01/01/26 format} {time in 1:01am format} {discord user id number} {Full message}"}**, schedule sends messages\n
+    **!list_scheduled**, check all scheduled messages\n
+    **!cancel_scheduled {"{discord user id number}"}**, cancels all scheduled messages to a user\n
+    **!night_message {"{google sheet URL} {date in 01/01/26 format} {time in 1:01am format}"}**, schedule sends messages to a list of users following the night message template in https://docs.google.com/spreadsheets/d/1BjtSiYMu4EsPOZdsfMFnFubCcLts0dNKPbbPGqTAzDc/edit?gid=0#gid=0
+    """) 
 
 @bot.command()
 async def hi(ctx):
-    await ctx.send("hi!") 
+    await ctx.send("hi! If you need command help use !help") 
 
 @bot.command()
 async def dm(ctx, user_id: int, *, message: str):
@@ -102,76 +110,110 @@ async def sheet(ctx, url: str = None):
     except Exception as e:
         await ctx.send(f"Error opening sheet: Please check the sheet is shared with {"read-write@enigmafia-discord-integration.iam.gserviceaccount.com"}.")
 
+active_tasks = {}
+
+async def run_scheduled_dm(user_id, wait_seconds, scheduled_time_str, message):
+    """Internal function to handle the timer and sending."""
+    try:
+        await asyncio.sleep(wait_seconds)
+        user = await bot.fetch_user(user_id)
+        await user.send(message)
+        print(f"Delivered scheduled message to {user_id}")
+    except asyncio.CancelledError:
+        # This is triggered when we call task.cancel()
+        print(f"Task for {user_id} was cancelled.")
+        raise 
+    except Exception as e:
+        print(f"Error sending to {user_id}: {e}")
+    finally:
+        # Clean up the tracker after the task finishes or is cancelled
+        if user_id in active_tasks:
+            active_tasks[user_id] = [t for t in active_tasks[user_id] if t[1] != scheduled_time_str]
+            if not active_tasks[user_id]:
+                del active_tasks[user_id]
+
 @bot.command()
 async def schedule_dm(ctx, date_input: str, time_input: str, user_id: int, *, message: str):
-    """
-    Schedules a DM for a specific user.
-    Usage:!schedule_dm 3/29/26 11:45pm 1234567890 Hello!
-    """
+    """Schedules a DM and adds it to the tracker."""
     try:
-        # 1. Parse the interpreted date and time
         full_input = f"{date_input} {time_input}"
         scheduled_time = parser.parse(full_input, fuzzy=True)
-        now = datetime.now()
+        wait_seconds = (scheduled_time - datetime.now()).total_seconds()
 
-        # 2. Check if the time is in the future
-        if scheduled_time <= now:
-            await ctx.send("❌ Error: That time is in the past. Please provide a future date/time.")
+        if wait_seconds <= 0:
+            await ctx.send("❌ Error: Time is in the past.")
             return
 
-        # 3. Confirm with the user
-        formatted_time = scheduled_time.strftime('%A, %B %d, %Y at %I:%M %p')
-        await ctx.send(f"I've interpreted the time as: **{formatted_time}**\nIs this correct? (Type **yes** to confirm)")
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
-
-        try:
-            # Wait 30 seconds for a "yes" response
-            await bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            await ctx.send("⏳ Confirmation timed out. Scheduling cancelled.")
-            return
-
-        # 4. Schedule the task
-        delay = (scheduled_time - now).total_seconds()
-        await ctx.send(f"✅ Confirmed! Message scheduled for {formatted_time}.")
+        # Confirmation
+        formatted_time = scheduled_time.strftime('%Y-%m-%d %I:%M %p')
+        await ctx.send(f"Schedule for {formatted_time}? (Type **yes**)")
         
-        # This runs in the background without blocking other bot commands
-        await asyncio.sleep(delay)
+        def check(m): return m.author == ctx.author and m.content.lower() == 'yes'
+        await bot.wait_for('message', check=check, timeout=30.0)
 
-        # 5. Send the message
-        try:
-            user = await bot.fetch_user(user_id)
-            await user.send(message)
-            print(f"Sent scheduled message to {user.name}")
-        except discord.Forbidden:
-            print(f"Could not DM user {user_id} (DMs closed or no shared server)")
-        except Exception as e:
-            print(f"Error sending scheduled DM: {e}")
+        # Create the task and store it
+        task = asyncio.create_task(run_scheduled_dm(user_id, wait_seconds, formatted_time, message))
+        
+        if user_id not in active_tasks:
+            active_tasks[user_id] = []
+        
+        active_tasks[user_id].append((task, formatted_time, message[:20] + "..."))
+        
+        await ctx.send(f"✅ Message scheduled for User {user_id} at {formatted_time}.")
 
-    except ValueError:
-        await ctx.send("❌ Error: I couldn't understand that date/time format. Use 'MM/DD/YY HH:MMam/pm'.")
     except Exception as e:
-        await ctx.send(f"❌ An unexpected error occurred: {e}")
+        await ctx.send(f"❌ Error: {e}")
 
-@bot.event
-async def on_ready():
-    print('We have logged in as {0.user}'.format(bot))
+# --- NEW COMMAND: LIST SCHEDULED ---
+@bot.command()
+async def list_scheduled(ctx):
+    """Shows all currently pending scheduled messages."""
+    if not active_tasks:
+        await ctx.send("📅 No messages are currently scheduled.")
+        return
+
+    report = "📋 **Pending Scheduled Messages:**\n"
+    for uid, tasks in active_tasks.items():
+        for _, time_str, msg_preview in tasks:
+            report += f"• **User <@{uid}> or {uid}**: {time_str} | \"{msg_preview}\"\n"
+
+    # Discord limit is 2000 chars
+    if len(report) > 2000:
+        await ctx.send("The list is too long to display.")
+    else:
+        await ctx.send(report)
+
+# --- NEW COMMAND: CANCEL SCHEDULED ---
+@bot.command()
+async def cancel_scheduled(ctx, user_id: int):
+    """Cancels ALL pending messages for a specific Discord ID."""
+    if user_id not in active_tasks:
+        await ctx.send(f"❌ No scheduled messages found for User {user_id}.")
+        return
+
+    task_list = active_tasks[user_id]
+    count = len(task_list)
+
+    for task, _, _ in task_list:
+        task.cancel() # Stops the asyncio timer immediately
+
+    # Clean up entry
+    del active_tasks[user_id]
+    await ctx.send(f"🛑 Successfully cancelled **{count}** scheduled message(s) for User {user_id}.")
 
 @bot.command()
 async def night_message(ctx, url: str, date_input: str, time_input: str):
     """
-    Schedules a mass message blast from a Google Sheet and reports specific errors.
-    Usage:!night_message https://sheet-url 3/29/26 11:59pm
+    Schedules individual DMs from a Google Sheet.
+    Includes immediate error reporting and integration with!list_scheduled.
     """
     try:
         # 1. Parse and validate the date/time
         full_input = f"{date_input} {time_input}"
         scheduled_time = parser.parse(full_input, fuzzy=True)
-        now = datetime.now()
+        wait_seconds = (scheduled_time - datetime.now()).total_seconds()
 
-        if scheduled_time <= now:
+        if wait_seconds <= 0:
             await ctx.send("❌ Error: That time is in the past. Please provide a future date/time.")
             return
 
@@ -188,22 +230,19 @@ async def night_message(ctx, url: str, date_input: str, time_input: str):
             await ctx.send("⏳ Confirmation timed out. Scheduling cancelled.")
             return
 
-        # 3. Schedule the background task
-        delay = (scheduled_time - now).total_seconds()
-        await ctx.send(f"✅ Confirmed! Reading sheet and scheduling send for {formatted_time}...")
-        
-        await asyncio.sleep(delay)
-
-        # 4. Open the sheet and send messages
+        # 3. Read the sheet immediately to report errors
         try:
             sh = gc.open_by_url(url)
             worksheet = sh.get_worksheet(0)
-            data = worksheet.get_all_values() 
+            data = worksheet.get_all_values()
             
             rows_to_process = data[1:] if len(data) > 1 else ""
-            
-            sent_count = 0
-            failures = []# To store specific reasons for each failure
+            if not rows_to_process:
+                await ctx.send("❌ The spreadsheet is empty (no data found after the header).")
+                return
+
+            scheduled_count = 0
+            immediate_failures = []
 
             for row in rows_to_process:
                 if len(row) >= 3:
@@ -212,43 +251,40 @@ async def night_message(ctx, url: str, date_input: str, time_input: str):
 
                     if user_id_str.isdigit():
                         uid = int(user_id_str)
-                        try:
-                            user = await bot.fetch_user(uid)
-                            await user.send(message_content)
-                            sent_count += 1
-                        except discord.Forbidden:
-                            # Triggered if DMs are closed or no mutual server
-                            failures.append(f"ID {uid}: DMs closed or no shared server.")
-                        except discord.NotFound:
-                            failures.append(f"ID {uid}: User not found (invalid ID).")
-                        except discord.HTTPException as e:
-                            failures.append(f"ID {uid}: API Error (Code {e.code}).")
-                        except Exception as e:
-                            failures.append(f"ID {uid}: Unexpected error: {e}")
+                        
+                        # Create background task
+                        task = asyncio.create_task(
+                            run_scheduled_dm(uid, wait_seconds, formatted_time, message_content)
+                        )
+                        
+                        # Track in global list
+                        if uid not in active_tasks:
+                            active_tasks[uid] = []
+                        active_tasks[uid].append((task, formatted_time, message_content[:20] + "..."))
+                        scheduled_count += 1
                     else:
-                        failures.append(f"Invalid format: '{user_id_str}' is not a numeric ID.")
-            
-            # 5. Send report to the user
-            report = f"📊 **Night Blast Complete**\n✅ Sent: {sent_count}\n❌ Failed: {len(failures)}"
-            
-            if failures:
-                report += "\n\n**Failure Details:**\n" + "\n".join(failures[:15]) # Limit list length
-                if len(failures) > 15:
-                    report += f"\n*(and {len(failures) - 15} more failures...)*"
+                        immediate_failures.append(f"Row {rows_to_process.index(row)+2}: '{user_id_str}' is not a valid ID.")
+                else:
+                    immediate_failures.append(f"Row {rows_to_process.index(row)+2}: Missing columns.")
 
-            # Check for Discord's 2000 character message limit [3]
+            # 4. Final Scheduling Report
+            report = f"📊 **Night Blast Scheduled**\n✅ Queued: {scheduled_count}\n❌ Immediate Failures: {len(immediate_failures)}"
+            
+            if immediate_failures:
+                report += "\n\n**Formatting Errors (Not Scheduled):**\n" + "\n".join(immediate_failures[:10])
+                if len(immediate_failures) > 10:
+                    report += f"\n*(and {len(immediate_failures) - 10} more...)*"
+
             if len(report) > 2000:
-                await ctx.author.send(f"Night blast complete: {sent_count} sent, {len(failures)} failed. (Report too long for Discord).")
+                await ctx.author.send(f"Scheduled {scheduled_count} messages. {len(immediate_failures)} format errors encountered.")
             else:
                 await ctx.author.send(report)
 
         except gspread.exceptions.SpreadsheetNotFound:
-            await ctx.author.send("❌ Error: Scheduled blast failed because I lost access to the sheet.")
-        except Exception as e:
-            print(f"Error during scheduled night blast: {e}")
-
+            await ctx.send("❌ Error: I cannot access that sheet. Share the sheet with the bot!")
+            
     except ValueError:
-        await ctx.send("❌ Error: I couldn't understand that date/time. Use 'MM/DD/YY HH:MMam/pm'.")
+        await ctx.send("❌ Error: I couldn't understand that date/time format. Use 'MM/DD/YY HH:MMam/pm'.")
     except Exception as e:
         await ctx.send(f"❌ An unexpected error occurred: {e}")
 
