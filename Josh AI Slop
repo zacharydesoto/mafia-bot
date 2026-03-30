@@ -10,7 +10,7 @@ from dateutil import parser # Flexible human-readable date parsing
 # --- CONFIGURATION ---
 # SECURITY WARNING: Never share your token publicly. 
 # It is recommended to reset this token in the Developer Portal immediately.
-TOKEN = 'MTQ4Nzk1Nzg5MDExMDMyNDc5Nw.G8Of74.ufafhK4jt_gnyuTzbirfZEtWbB_vIYg20rrE7E'
+TOKEN = 'needs to be refreshed this token got nuked'
 SHEET_URL = 'https://docs.google.com/spreadsheets/d/1BjtSiYMu4EsPOZdsfMFnFubCcLts0dNKPbbPGqTAzDc/edit?gid=0#gid=0'
 # Set the time to send (24-hour format: Hour, Minute)
 # TARGET_TIME = datetime.time(hour=22, minute=31, second=0) 
