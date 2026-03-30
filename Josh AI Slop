@@ -1,0 +1,255 @@
+import discord
+import gspread
+import datetime
+import asyncio
+from discord.ext import tasks, commands
+from datetime import datetime
+from dateutil import parser # Flexible human-readable date parsing
+
+
+# --- CONFIGURATION ---
+# SECURITY WARNING: Never share your token publicly. 
+# It is recommended to reset this token in the Developer Portal immediately.
+TOKEN = 'MTQ4Nzk1Nzg5MDExMDMyNDc5Nw.G8Of74.ufafhK4jt_gnyuTzbirfZEtWbB_vIYg20rrE7E'
+SHEET_URL = 'https://docs.google.com/spreadsheets/d/1BjtSiYMu4EsPOZdsfMFnFubCcLts0dNKPbbPGqTAzDc/edit?gid=0#gid=0'
+# Set the time to send (24-hour format: Hour, Minute)
+# TARGET_TIME = datetime.time(hour=22, minute=31, second=0) 
+# ---------------------
+
+intents = discord.Intents.default()
+intents.members = True  # Required to fetch users for DMs
+intents.message_content = True  # REQUIRED to read "!hi" command content 
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Authenticate with Google
+gc = gspread.service_account(filename=r'C:\Users\joshu\OneDrive\Desktop\UCLA\Y3Q2\Enigmafia\enigmafia-discord-integration-fa2fad62b909.json')
+sh = gc.open_by_url(SHEET_URL)
+worksheet = sh.get_worksheet(0)
+print(f"Connected to sheet: {worksheet.title}")
+
+@bot.command()
+async def hi(ctx):
+    await ctx.send("hi!") 
+
+@bot.command()
+async def dm(ctx, user_id: int, *, message: str):
+    """
+    Sends a DM to a user by ID.
+    Usage:!dm 123456789012345678 Your message here
+    """
+    try:
+        # fetch_user queries the API directly for the user object
+        user = await bot.fetch_user(user_id)
+        
+        # Attempt to send the message
+        await user.send(message)
+        await ctx.send(f"✅ Successfully sent message to **{user.name}**")
+        
+    except discord.Forbidden:
+        # Error code 50007: Cannot send messages to this user
+        await ctx.send("❌ Error: Cannot DM this user. They may have DMs disabled, or the bot and user share no mutual servers.")
+    
+    except discord.NotFound:
+        await ctx.send("❌ Error: No user was found with that ID.")
+        
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected error occurred: {e}")
+
+@bot.command()
+async def ping(ctx):
+    await ctx.send(f'PONG! {ctx.author.mention} {round(bot.latency*1000)}ms')
+
+@bot.command()
+async def pong(ctx):
+    await ctx.send(f'PING! {ctx.author} {round(bot.latency*1000)}ms')
+
+@bot.command()
+async def sheet(ctx, url: str = None):
+    """Opens a provided Google Sheet URL and prints a rough table."""
+    # Check if a URL was provided as an argument
+    if url is None:
+        await ctx.send("a google sheets URL is needed")
+        return
+
+    try:
+        # Attempt to open the spreadsheet provided in the command
+        target_sh = gc.open_by_url(url)
+        target_wks = target_sh.get_worksheet(0)
+        data = target_wks.get_all_values()
+        
+        if not data:
+            await ctx.send("The spreadsheet is empty.")
+            return
+
+        # Format the data into a rough text table
+        table_lines = []
+        for row in data:
+            line = " | ".join(str(cell) for cell in row)
+            table_lines.append(line)
+            if len(table_lines) == 1:
+                table_lines.append("-" * len(line))
+
+        final_table = "\n".join(table_lines)
+        
+        if len(final_table) > 1900:
+            await ctx.send("The sheet is too large to display in a single message!")
+        else:
+            await ctx.send(f"```\n{final_table}\n```")
+            
+    except gspread.exceptions.SpreadsheetNotFound:
+        # Error triggered if the bot lacks permission 
+        await ctx.send("share the sheet with the bot")
+    except Exception as e:
+        await ctx.send(f"Error opening sheet: Please check the sheet is shared with {"read-write@enigmafia-discord-integration.iam.gserviceaccount.com"}.")
+
+@bot.command()
+async def schedule_dm(ctx, date_input: str, time_input: str, user_id: int, *, message: str):
+    """
+    Schedules a DM for a specific user.
+    Usage:!schedule_dm 3/29/26 11:45pm 1234567890 Hello!
+    """
+    try:
+        # 1. Parse the interpreted date and time
+        full_input = f"{date_input} {time_input}"
+        scheduled_time = parser.parse(full_input, fuzzy=True)
+        now = datetime.now()
+
+        # 2. Check if the time is in the future
+        if scheduled_time <= now:
+            await ctx.send("❌ Error: That time is in the past. Please provide a future date/time.")
+            return
+
+        # 3. Confirm with the user
+        formatted_time = scheduled_time.strftime('%A, %B %d, %Y at %I:%M %p')
+        await ctx.send(f"I've interpreted the time as: **{formatted_time}**\nIs this correct? (Type **yes** to confirm)")
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
+
+        try:
+            # Wait 30 seconds for a "yes" response
+            await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ Confirmation timed out. Scheduling cancelled.")
+            return
+
+        # 4. Schedule the task
+        delay = (scheduled_time - now).total_seconds()
+        await ctx.send(f"✅ Confirmed! Message scheduled for {formatted_time}.")
+        
+        # This runs in the background without blocking other bot commands
+        await asyncio.sleep(delay)
+
+        # 5. Send the message
+        try:
+            user = await bot.fetch_user(user_id)
+            await user.send(message)
+            print(f"Sent scheduled message to {user.name}")
+        except discord.Forbidden:
+            print(f"Could not DM user {user_id} (DMs closed or no shared server)")
+        except Exception as e:
+            print(f"Error sending scheduled DM: {e}")
+
+    except ValueError:
+        await ctx.send("❌ Error: I couldn't understand that date/time format. Use 'MM/DD/YY HH:MMam/pm'.")
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected error occurred: {e}")
+
+@bot.event
+async def on_ready():
+    print('We have logged in as {0.user}'.format(bot))
+
+@bot.command()
+async def night_message(ctx, url: str, date_input: str, time_input: str):
+    """
+    Schedules a mass message blast from a Google Sheet and reports specific errors.
+    Usage:!night_message https://sheet-url 3/29/26 11:59pm
+    """
+    try:
+        # 1. Parse and validate the date/time
+        full_input = f"{date_input} {time_input}"
+        scheduled_time = parser.parse(full_input, fuzzy=True)
+        now = datetime.now()
+
+        if scheduled_time <= now:
+            await ctx.send("❌ Error: That time is in the past. Please provide a future date/time.")
+            return
+
+        # 2. Confirmation step
+        formatted_time = scheduled_time.strftime('%A, %B %d, %Y at %I:%M %p')
+        await ctx.send(f"I've interpreted the blast time as: **{formatted_time}**\nIs this correct? (Type **yes** to confirm)")
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
+
+        try:
+            await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ Confirmation timed out. Scheduling cancelled.")
+            return
+
+        # 3. Schedule the background task
+        delay = (scheduled_time - now).total_seconds()
+        await ctx.send(f"✅ Confirmed! Reading sheet and scheduling send for {formatted_time}...")
+        
+        await asyncio.sleep(delay)
+
+        # 4. Open the sheet and send messages
+        try:
+            sh = gc.open_by_url(url)
+            worksheet = sh.get_worksheet(0)
+            data = worksheet.get_all_values() 
+            
+            rows_to_process = data[1:] if len(data) > 1 else ""
+            
+            sent_count = 0
+            failures = []# To store specific reasons for each failure
+
+            for row in rows_to_process:
+                if len(row) >= 3:
+                    user_id_str = row[1].strip()
+                    message_content = row[2]
+
+                    if user_id_str.isdigit():
+                        uid = int(user_id_str)
+                        try:
+                            user = await bot.fetch_user(uid)
+                            await user.send(message_content)
+                            sent_count += 1
+                        except discord.Forbidden:
+                            # Triggered if DMs are closed or no mutual server
+                            failures.append(f"ID {uid}: DMs closed or no shared server.")
+                        except discord.NotFound:
+                            failures.append(f"ID {uid}: User not found (invalid ID).")
+                        except discord.HTTPException as e:
+                            failures.append(f"ID {uid}: API Error (Code {e.code}).")
+                        except Exception as e:
+                            failures.append(f"ID {uid}: Unexpected error: {e}")
+                    else:
+                        failures.append(f"Invalid format: '{user_id_str}' is not a numeric ID.")
+            
+            # 5. Send report to the user
+            report = f"📊 **Night Blast Complete**\n✅ Sent: {sent_count}\n❌ Failed: {len(failures)}"
+            
+            if failures:
+                report += "\n\n**Failure Details:**\n" + "\n".join(failures[:15]) # Limit list length
+                if len(failures) > 15:
+                    report += f"\n*(and {len(failures) - 15} more failures...)*"
+
+            # Check for Discord's 2000 character message limit [3]
+            if len(report) > 2000:
+                await ctx.author.send(f"Night blast complete: {sent_count} sent, {len(failures)} failed. (Report too long for Discord).")
+            else:
+                await ctx.author.send(report)
+
+        except gspread.exceptions.SpreadsheetNotFound:
+            await ctx.author.send("❌ Error: Scheduled blast failed because I lost access to the sheet.")
+        except Exception as e:
+            print(f"Error during scheduled night blast: {e}")
+
+    except ValueError:
+        await ctx.send("❌ Error: I couldn't understand that date/time. Use 'MM/DD/YY HH:MMam/pm'.")
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected error occurred: {e}")
+
+bot.run(TOKEN)
