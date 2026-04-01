@@ -10,8 +10,8 @@ from dateutil import parser # Flexible human-readable date parsing
 # --- CONFIGURATION ---
 # SECURITY WARNING: Never share your token publicly. 
 # It is recommended to reset this token in the Developer Portal immediately.
-TOKEN = 'I learned this time'
-# Set the time to send (24-hour format: Hour, Minute)
+TOKEN = 'DM Josh for the token'
+# Set the time to send (24-hour for mat: Hour, Minute)
 # TARGET_TIME = datetime.time(hour=22, minute=31, second=0) 
 # ---------------------
 
@@ -21,10 +21,10 @@ intents.message_content = True  # REQUIRED to read "!hi" command content
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Authenticate with Google
-gc = gspread.service_account(filename=r'C:\Users\joshu\OneDrive\Desktop\UCLA\Y3Q2\Enigmafia\enigmafia-discord-integration-fa2fad62b909.json')
+gc = gspread.service_account(filename=r'dm Josh for the json')
 
 @bot.command()
-async def help(ctx):
+async def command_help(ctx):
     await ctx.send(f"""# These are the available commands:\n
     **!ping**, returns the user ping to check if the bot is lagging\n
     **!dm {"{discord user id number} {Full message}"}**, use this to check if the bot can dm a user\n
